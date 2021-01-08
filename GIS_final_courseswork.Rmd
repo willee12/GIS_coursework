@@ -1,0 +1,314 @@
+---
+title: "GIS_assessment_lw"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data collection
+
+We need to collect data from different websites, I have already done this step and saved them in my computer
+
+```{r}
+#get the shapefiles from London Datastore, choose BFE data, then use qgis
+#to merge the 33 shapefiles and get the whole msoa shapefile of london
+
+library(sf)
+london_msoa <- st_read(here::here("final_data","2011_london_boundaries","msoa_merge_BFC.shp"))
+```
+it is imported and in the corrected crs OSGB 1936
+let's plot it to see what it looks like
+
+```{r}
+#plot
+library(tmap)
+tmap_mode("plot")
+tm_shape(london_msoa) + tm_polygons(col = "antiquewhite2", alpha = 0.3)
+```
+
+it looks right, the whole london is ploted by msoa boundaries
+then we need to get other data, I download these data from London Datastore
+
+```{r}
+#read csv to get the data
+
+house_price <- st_read(here::here("final_data", "land-registry-house-prices-MSOA.csv"))
+old_loneliness <- st_read(here::here("final_data", "london-loneliness-MSOA.csv"))
+property_period <- st_read(here::here("final_data", "dwelling-build-period and-property-type-2014-lsoa-msoa.csv"))
+bad_health_rent <- st_read(here::here("final_data", "msoa-data.csv"))
+```
+
+## Data cleaning
+
+Now we have get all the data we need in this analysis, but these datasets contains too much information, I need to filter them to get a simple dataset
+
+```{r}
+#house_price data contains median, mean, and sales of house_price, I choose 
+#mean figure to do next analysis
+
+library(dplyr)
+library(stringr)
+house_price_new <- house_price %>%
+  filter(house_price$Measure=="Mean", house_price$Year=="Year ending Dec 2011")
+house_price_new <- house_price_new[, c("Code", "Value")]
+house_price_new$Value <- as.numeric(house_price_new$Value)
+
+old_loneliness_new <- old_loneliness[, c("MSOA.code", "Prevalence")]
+old_loneliness_new$Prevalence <- as.numeric(old_loneliness_new$Prevalence)
+
+#I choose property which built after 2000 as new building to see how new buildings influence loneliness of old people because they may prefer old buildings which can provide them with familiar environment
+property_period <- property_period %>%
+  filter(property_period$Geography2=="MSOA")
+property_period$X2000.to.2009 <- as.numeric(property_period$X2000.to.2009)
+property_period$X2010.to.2012 <- as.numeric(property_period$X2010.to.2012)
+property_period$Total <- as.numeric(property_period$Total)
+property_period[is.na(property_period)] = 0
+property_period_new <- property_period %>%
+  mutate(short_period = (property_period$X2000.to.2009 + property_period$X2010.to.2012) / property_period$Total *100)
+property_period_new <- property_period_new[, c("Area.Code3", "short_period")]
+property_period_new[is.na(property_period_new)] = 0
+
+#I combine the figures of public rent and private rent to get total rent percentage
+rent_percentage <- bad_health_rent[, c("field_1", "field_98", "field_99")]
+rent_percentage$field_98 <- as.numeric(rent_percentage$field_98)
+rent_percentage$field_99 <- as.numeric(rent_percentage$field_99)
+rent_percentage[is.na(rent_percentage)] = 0
+rent_percentage <- rent_percentage %>%
+  mutate(rent_total = rent_percentage$field_98 + rent_percentage$field_99)
+rent_percentage_new <- rent_percentage[, c("field_1", "rent_total")]
+rent_percentage_new <- rent_percentage_new %>%
+  dplyr::filter(str_detect(field_1, "^E02"))
+
+bad_health <- bad_health_rent[, c("field_1", "field_170")]
+bad_health_new <- bad_health %>%
+  dplyr::filter(str_detect(field_1, "^E02"))
+bad_health_new$field_170 <- as.numeric(bad_health_new$field_170)
+colnames(bad_health_new)[2] <- "bad_health_percentage" 
+
+```
+
+
+
+```{r}
+#now I can remove the intermediate data
+rm(bad_health,bad_health_rent,house_price,old_loneliness,property_period,rent_percentage)
+```
+
+
+## Visualization
+
+We have got and cleaned all the data we need, however, the data we want to analyze do not have geographical features, so we need to combine it with shapfile of london to do further analysis
+
+```{r}
+#combine data with london shapfile
+
+loneliness_geo <- london_msoa %>%
+  left_join(.,
+            old_loneliness_new,
+            by = c("MSOA11CD" = "MSOA.code"))
+loneliness_geo <- loneliness_geo %>%
+  left_join(.,
+            bad_health_new,
+            by = c("MSOA11CD" = "field_1"))
+loneliness_geo <-loneliness_geo %>%
+  left_join(.,
+            house_price_new,
+            by = c("MSOA11CD" = "Code"))
+loneliness_geo <- loneliness_geo%>%
+  left_join(.,
+            property_period_new,
+            by = c("MSOA11CD" = "Area.Code3"))
+loneliness_geo <- loneliness_geo %>%
+  left_join(.,
+            rent_percentage_new,
+            by = c("MSOA11CD" = "field_1"))
+```
+
+let's plot it to see the distribution of loneliness,since the file is too large, I will use "plot"mode in the next code, if you want to see the interative map, you can change tmap_mode to "view"
+
+```{r}
+
+tmap_mode("plot")
+tm_shape(loneliness_geo) + 
+  tm_polygons("Prevalence",
+              style = "jenks",
+              palette="PuOr",
+              midpoint=NA,
+              popup.vars=c("MSOA11CD", "Prevalence"),
+              title="Loneliness of old people in London")
+```
+
+
+```{r}
+#then is the data of house price.
+
+tm_shape(loneliness_geo) + 
+  tm_polygons("Value",
+              style = "jenks",
+              palette="PuOr",
+              midpoint=NA,
+              popup.vars=c("MSOA11CD", "Value"),
+              title="House Price in London")
+```
+
+```{r}
+#then is the data of bad health
+
+tm_shape(loneliness_geo) + 
+  tm_polygons("bad_health_percentage",
+              style = "jenks",
+              palette="PuOr",
+              midpoint=NA,
+              popup.vars=c("MSOA11CD", "bad_health_percentage"),
+              title="Bad Health in London")
+```
+
+```{r}
+#then is the data of rent percentage
+
+tm_shape(loneliness_geo) + 
+  tm_polygons("rent_total",
+              style = "jenks",
+              palette="PuOr",
+              midpoint=NA,
+              popup.vars=c("MSOA11CD", "rent_total"),
+              title="Rent Percentage in London")
+```
+
+```{r}
+#finally the data of new building
+
+tm_shape(loneliness_geo) + 
+  tm_polygons("short_period",
+              style = "jenks",
+              palette="PuOr",
+              midpoint=NA,
+              popup.vars=c("MSOA11CD", "short_period"),
+              title="New Building in London")
+```
+
+## Correlation analysis
+
+```{r}
+# let's do regression analysis to the data
+#from the maps we can see that the distribution of house price is particularly concentrated, so I did a log transformation to it to conduct following analysis, it can be seen that after log transformation it is more normally distributed.
+
+library(ggplot2)
+library(tidyverse)
+ggplot(loneliness_geo, aes(x=Value)) + 
+  geom_histogram(aes(y = ..density..),
+                 binwidth = 80000) + 
+  geom_density(colour="red", 
+               size=1, 
+               adjust=1)
+
+ggplot(loneliness_geo, aes(x=log(Value))) + 
+  geom_histogram(aes(y = ..density..),
+                 binwidth = 0.2) + 
+  geom_density(colour="red", 
+               size=1, 
+               adjust=1)
+
+library(tidypredict)
+library(car)
+y = loneliness_geo$Prevalence
+x1 = loneliness_geo$Value
+x2 = loneliness_geo$bad_health_percentage
+x3 = loneliness_geo$rent_total
+x4 = loneliness_geo$short_period
+
+model_final <- lm(y ~ log(x1) + x2 +x3 +x4, data = loneliness_geo)
+tidy(model_final)
+summary(model_final)
+vif(model_final)
+```
+
+```{r}
+#let's see the residuals of our model
+loneliness_reg <- loneliness_geo %>%
+  mutate(model_final_res = residuals(model_final))
+
+par(mfrow=c(2,2))
+plot(model_final)
+```
+we now get the correlation of these variables, the R square is high enough to support the assumption that there are relationships exist between these variables, but since this analysis is based on geography, we need to consider the influence of space. 
+```{r}
+library(spgwr)
+
+st_crs(loneliness_geo) = 27700
+loneliness_geo_sp <-loneliness_geo %>%
+  as(., "Spatial")
+coordsW <- loneliness_geo %>%
+  st_centroid() %>%
+  st_geometry()
+st_crs(coordsW) = 27700
+coordsWSP <- coordsW %>%
+  as(., "Spatial")
+coordsWSP
+```
+
+
+```{r}
+GWRbandwidth <- gwr.sel(Prevalence ~ log(Value) + rent_total +bad_health_percentage +short_period, 
+                  data = loneliness_geo_sp, 
+                        coords=coordsWSP,
+                        adapt=T)
+```
+
+```{r}
+#run the gwr model
+
+gwr.model = gwr(Prevalence ~ log(Value) + rent_total +bad_health_percentage +short_period, 
+                  data = loneliness_geo_sp, 
+                coords=coordsWSP, 
+                adapt=GWRbandwidth, 
+                hatmatrix=TRUE, 
+                se.fit=TRUE)
+gwr.model
+
+results <- as.data.frame(gwr.model$SDF)
+names(results)
+
+loneliness_geo2 <- loneliness_geo %>%
+  mutate(coefhouseprice = results$log.Value.,
+         coefbadhealth = results$bad_health_percentage,
+         coefrent = results$rent_total,
+         coefnewbuilding = results$short_period)
+```
+
+```{r}
+
+tm_shape(loneliness_geo2) +
+  tm_polygons(col = "coefhouseprice",
+              palette = "Reds",
+              alpha = 0.5)
+```
+
+```{r}
+
+tm_shape(loneliness_geo2) +
+  tm_polygons(col = "coefbadhealth",
+              palette = "Reds",
+              alpha = 0.5)
+```
+
+```{r}
+
+tm_shape(loneliness_geo2) +
+  tm_polygons(col = "coefrent",
+              palette = "Reds",
+              alpha = 0.5)
+```
+
+```{r}
+
+tm_shape(loneliness_geo2) +
+  tm_polygons(col = "coefnewbuilding",
+              palette = "Reds",
+              alpha = 0.5)
+```
+
+
+
